@@ -27,9 +27,9 @@ typedef struct seh
     jmp_buf jmpbuf;
 } seh_t;
 
-#define seh_try(ctx)     seh__begin(&(ctx)); if (setjmp((ctx).jmpbuf) == 0)
+#define seh_enter(ctx)     seh__begin(&(ctx)); if (setjmp((ctx).jmpbuf) == 0)
 #define seh_catch(exp)  else if ((seh_get() != SEH_LEAVE) && (exp))
-#define seh_finally(ctx) seh__end(&(ctx)); if (1)
+#define seh_exit(ctx) seh__end(&(ctx)); if (1)
 //#define seh_throw(i)     cur_value = i; longjmp(ctx, 1)
 
 SEH_API int  seh_get(void);
@@ -162,7 +162,7 @@ void seh_throw(int value)
 
 void seh__end(seh_t* ctx)
 {
-    if (ctx == seh_stack[seh_stack_pointer])
+    if (ctx == seh_stack[seh_stack_pointer - 1])
     {
     #if defined(_WIN32)
         SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER)ctx->saved);

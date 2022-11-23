@@ -5,22 +5,22 @@
 
 int main(int argc, char* argv[])
 {
-    int count = 100;
+    int count = 1000;
     while (count-- > 0)
     {
-		seh_t seh;
-        seh_try (seh)
+		seh_t* seh = (seh_t*) malloc(sizeof(seh_t));
+        seh_enter (*seh)
 		{
 			int* ptr = NULL;
 			*ptr = 0; /* Throw exception here */
 		}
 		seh_catch (seh_get() == SEH_SEGFAULT)
 		{
-			fprintf(stderr, "Segment fault exception has been thrown\n");
+			printf("Segment fault exception has been thrown\n");
 		}
-		seh_finally (seh)
+		seh_exit (*seh)
 		{
-			printf("Finally of try/catch\n");
+			printf("Finally of try/catch: SP=%d\n", seh_stack_pointer);
 		}
     }
     
