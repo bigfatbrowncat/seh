@@ -10,16 +10,16 @@
 /**
  * Exception code
  */
-#define SEH_NONE            0
+#define SEH_OTHER           -0x9
 #define SEH_LEAVE           -0x9999
-#define SEH_ABORT           -0x22222
-#define SEH_FLOAT           -0x11111
-#define SEH_SYSCALL         -0x33333
-#define SEH_ILLCODE         -0x12313
-#define SEH_MISALIGN        -0x12341
-#define SEH_SEGFAULT        -0x54647
-#define SEH_OUTBOUNDS       -0xada32
-#define SEH_STACKOVERFLOW   -0xdeadf
+#define SEH_ABORT           -0x1
+#define SEH_ARITHMETICS     -0x2
+//#define SEH_SYSCALL         -0x3
+#define SEH_ILLCODE         -0x4
+#define SEH_MISALIGN        -0x5
+#define SEH_MEMORYACCESS    -0x6
+#define SEH_OUTBOUNDS       -0x7
+#define SEH_STACKOVERFLOW   -0x8
 
 typedef struct seh
 {
@@ -27,9 +27,9 @@ typedef struct seh
     jmp_buf jmpbuf;
 } seh_t;
 
-#define seh_enter(ctx)     seh__begin(&(ctx)); if (setjmp((ctx).jmpbuf) == 0)
-#define seh_catch(exp)  else if ((seh_get() != SEH_LEAVE) && (exp))
-#define seh_exit(ctx) seh__end(&(ctx)); if (1)
+#define seh_enter { seh_t* seh_local_ctx = (seh_t*) malloc(sizeof(seh_t)); seh__begin(seh_local_ctx); if (setjmp(seh_local_ctx->jmpbuf) == 0)
+#define seh_handle(exp)  else if ((seh_get() != SEH_LEAVE) && (exp))
+#define seh_exit seh__end(seh_local_ctx); }
 //#define seh_throw(i)     cur_value = i; longjmp(ctx, 1)
 
 SEH_API int  seh_get(void);
@@ -50,7 +50,7 @@ SEH_API void seh__end(seh_t* ctx);
 #endif
 
 static int    seh_value;
-static int    seh_stack_pointer;
+static int    seh_stack_pointer = 0;
 static seh_t* seh_stack[SEH_STACK_SIZE];
 
 #if defined(_WIN32)
@@ -60,17 +60,20 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
     switch (info->ExceptionRecord->ExceptionCode)
     {
     case EXCEPTION_FLT_OVERFLOW:
+    case EXCEPTION_INT_OVERFLOW:
     case EXCEPTION_FLT_UNDERFLOW:
     case EXCEPTION_FLT_STACK_CHECK:
     case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
     case EXCEPTION_FLT_INEXACT_RESULT:
     case EXCEPTION_FLT_DENORMAL_OPERAND:
     case EXCEPTION_FLT_INVALID_OPERATION:
-        seh_throw(SEH_FLOAT);
+        seh_throw(SEH_ARITHMETICS);
         //seh_value = SEH_FLOAT;
         break;
 
     case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_PRIV_INSTRUCTION:
         seh_throw(SEH_ILLCODE);
         //seh_value = SEH_ILLCODE;
         break;
@@ -81,7 +84,9 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
         break;
 	
     case EXCEPTION_ACCESS_VIOLATION:
-        seh_throw(SEH_SEGFAULT);
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_GUARD_PAGE:
+        seh_throw(SEH_MEMORYACCESS);
         //seh_value = SEH_SEGFAULT;
         break;
 	
@@ -94,9 +99,13 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
         seh_throw(SEH_MISALIGN);
         //seh_value = SEH_MISALIGN;
         break;
-	
+
+    case EXCEPTION_NONCONTINUABLE_EXCEPTION:
+        seh_throw(SEH_OTHER);
+        break;
+
     default:
-        seh_throw(SEH_NONE);
+        //seh_throw(SEH_NONE);      // Do nothing
         //seh_value = SEH_NONE;
         break;
     }
@@ -116,12 +125,12 @@ static void seh__sighandler(int sig, siginfo_t* info, void* context)
         seh_throw(SEH_MISALIGN);
         break;
 
-    case SIGSYS:
-        seh_throw(SEH_SYSCALL);
-        break;
+//    case SIGSYS:
+//        seh_throw(SEH_SYSCALL);
+//        break;
 
     case SIGFPE:
-        seh_throw(SEH_FLOAT);
+        seh_throw(SEH_ARITHMETICS);
         break;
 	
     case SIGILL:
@@ -137,7 +146,7 @@ static void seh__sighandler(int sig, siginfo_t* info, void* context)
         break;
 	
     default:
-        seh_throw(SEH_NONE);
+        //seh_throw(SEH_NONE);   // Do nothing
         break;
     }
 }
@@ -196,7 +205,7 @@ void seh__begin(seh_t* ctx)
     }
 
 #if defined(_WIN32)
-    ctx->saved = SetUnhandledExceptionFilter(seh__sighandler);
+    ctx->saved = (void*)SetUnhandledExceptionFilter(seh__sighandler);
 #else
     ctx->saved = malloc(sizeof(struct sigaction) * (sizeof(seh_signals) / sizeof(seh_signals[0])));
 
