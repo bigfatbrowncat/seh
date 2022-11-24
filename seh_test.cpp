@@ -1,16 +1,35 @@
 #include <stdio.h>
 #include <math.h>
-#include <float.h>
 
 #include <memory>
+
+#ifdef _WIN32
+#include <float.h>
+#else
+#include <fenv.h>
+#endif
 
 #define SEH_IMPL
 #include "seh.h"
 
+#define	_EM_INVALID	0x00000010
+
 #define REPORT(T, MSG) if (T) { printf("%s: SUCCESS\n", MSG); } else { printf("%s: FAIL\n", MSG); }
 
-BOOL test_segfault() {
-    BOOL s1 = FALSE, s2 = FALSE;
+void enable_fp_traps() {
+#ifdef _WIN32
+    _control87(_EM_INVALID, _EM_OVERFLOW | _EM_UNDERFLOW | _EM_INEXACT | _EM_ZERODIVIDE | _EM_DENORMAL);
+#else
+    feenableexcept(FE_DIVBYZERO);
+    feenableexcept(FE_INEXACT);
+    feenableexcept(FE_INVALID); 
+    feenableexcept(FE_OVERFLOW);
+    feenableexcept(FE_UNDERFLOW); 
+#endif
+}
+
+bool test_segfault() {
+    bool s1 = false, s2 = false;
 
     seh_enter
     {
@@ -19,18 +38,18 @@ BOOL test_segfault() {
     }
     seh_handle (seh_get() == SEH_MEMORYACCESS)
     {
-        s1 = TRUE;
+        s1 = true;
     }
     seh_exit
     {
-        s2 = TRUE;
+        s2 = true;
     }
 
     return s1 && s2;
 }
 
-BOOL test_div_int_zero() {
-    BOOL s1 = FALSE, s2 = FALSE;
+bool test_div_int_zero() {
+    bool s1 = false, s2 = false;
 
     seh_enter
     {
@@ -40,20 +59,20 @@ BOOL test_div_int_zero() {
     }
     seh_handle (seh_get() == SEH_ARITHMETICS)
     {
-        s1 = TRUE;
+        s1 = true;
     }
     seh_exit
     {
-        s2 = TRUE;
+        s2 = true;
     }
 
     return s1 && s2;
 }
 
-BOOL test_div_float_zero() {
-    _control87(_EM_INVALID, _EM_ZERODIVIDE);
+bool test_div_float_zero() {
+    bool s1 = false, s2 = false;
 
-    BOOL s1 = FALSE, s2 = FALSE;
+    enable_fp_traps();
 
     seh_enter
     {
@@ -63,24 +82,24 @@ BOOL test_div_float_zero() {
     }
     seh_handle (seh_get() == SEH_ARITHMETICS)
     {
-        s1 = TRUE;
+        s1 = true;
     }
     seh_exit
     {
-        s2 = TRUE;
+        s2 = true;
     }
 
     return s1 && s2;
 }
 
 
-BOOL test_denormal() {
-    BOOL s1 = FALSE, s2 = FALSE;
+bool test_denormal() {
+    bool s1 = false, s2 = false;
+
+    enable_fp_traps();
 
     seh_enter
     {
-        _control87(_EM_INVALID, _EM_DENORMAL);
-
         const unsigned ux = 0xf; // denormal as float.
         const unsigned uy = 0x7; // denormal as float.
 
@@ -101,48 +120,49 @@ BOOL test_denormal() {
     }
     seh_handle (seh_get() == SEH_ARITHMETICS)
     {
-        s1 = TRUE;
+        s1 = true;
     }
     seh_exit
     {
-        s2 = TRUE;
+        s2 = true;
     }
 
     return s1 && s2;
 }
 
 void recursive_stack_overflow() {
+    printf("%s", "");
     recursive_stack_overflow();
 }
 
-BOOL test_stack_overflow() {
-    BOOL s1 = FALSE, s2 = FALSE;
+bool test_stack_overflow() {
+    bool s1 = false, s2 = false;
 
     seh_enter
     {
         recursive_stack_overflow();
     }
-    seh_handle (seh_get() == SEH_STACKOVERFLOW)
+    seh_handle (seh_get() == SEH_STACKERROR)
     {
-        s1 = TRUE;
+        s1 = true;
     }
     seh_exit
     {
-        s2 = TRUE;
+        s2 = true;
     }
 
     return s1 && s2;
 }
 
-BOOL test_thousand_segfaults() {
+bool test_thousand_segfaults() {
     for (int i = 0; i < 1000; i++) {
-        if (!test_segfault()) return FALSE;
+        if (!test_segfault()) return false;
     }
-    return TRUE;
+    return true;
 }
 
-BOOL test_check_inside_check_segfault() {
-    BOOL s1 = FALSE, s2 = FALSE, s3 = FALSE;
+bool test_check_inside_check_segfault() {
+    bool s1 = false, s2 = false, s3 = false;
 
     int ptr_start = seh_stack_pointer;
 
@@ -155,7 +175,7 @@ BOOL test_check_inside_check_segfault() {
         }
         seh_handle (seh_get() == SEH_MEMORYACCESS)
         {
-            s1 = TRUE;
+            s1 = true;
         }
         seh_exit
         {
@@ -164,7 +184,7 @@ BOOL test_check_inside_check_segfault() {
     }
     seh_handle (seh_get() == SEH_MEMORYACCESS)
     {
-        s1 = FALSE;
+        s1 = false;
     }
     seh_exit
     {
@@ -177,15 +197,15 @@ BOOL test_check_inside_check_segfault() {
 
 int main(int argc, char* argv[])
 {
+    enable_fp_traps();
+
     REPORT(test_segfault(), "Single segmentation fault");
     REPORT(test_thousand_segfaults(), "Thousand segmentation faults");
     REPORT(test_div_int_zero(), "Integer division by zero");
     REPORT(test_div_float_zero(), "Floating-point division by zero");
     REPORT(test_denormal(), "Denormalization");
-    REPORT(test_stack_overflow(), "Stack overflow");
     REPORT(test_check_inside_check_segfault(), "Check inside the check");
-
-    //recursive_stack_overflow();
-
+    REPORT(test_stack_overflow(), "Stack overflow");
+	
     return 0;
 }

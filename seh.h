@@ -3,6 +3,12 @@
 
 #include <setjmp.h>
 
+#ifdef _WIN32
+#include <Windows.h>
+#else
+#include <signal.h>
+#endif
+
 #ifndef SEH_API
 #define SEH_API
 #endif
@@ -14,12 +20,12 @@
 #define SEH_LEAVE           -0x9999
 #define SEH_ABORT           -0x1
 #define SEH_ARITHMETICS     -0x2
-//#define SEH_SYSCALL         -0x3
+#define SEH_USER_INTERRUPT  -0x3
 #define SEH_ILLCODE         -0x4
 #define SEH_MISALIGN        -0x5
 #define SEH_MEMORYACCESS    -0x6
 #define SEH_OUTBOUNDS       -0x7
-#define SEH_STACKOVERFLOW   -0x8
+#define SEH_STACKERROR   -0x8
 
 typedef struct seh
 {
@@ -52,9 +58,10 @@ SEH_API void seh__end(seh_t* ctx);
 static int    seh_value;
 static int    seh_stack_pointer = 0;
 static seh_t* seh_stack[SEH_STACK_SIZE];
+static stack_t* seh__signal_stack;
+
 
 #if defined(_WIN32)
-#include <Windows.h>
 static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
 {
     switch (info->ExceptionRecord->ExceptionCode)
@@ -79,8 +86,8 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
         break;
 
     case EXCEPTION_STACK_OVERFLOW:
-        seh_throw(SEH_STACKOVERFLOW);
-        //seh_value = SEH_STACKOVERFLOW;
+        seh_throw(SEH_STACKERROR);
+        //seh_value = SEH_STACKERROR;
         break;
 	
     case EXCEPTION_ACCESS_VIOLATION:
@@ -115,6 +122,25 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
         : EXCEPTION_CONTINUE_SEARCH;
 }
 #else
+
+int check_stack_error(siginfo_t* info) {
+    pthread_attr_t attr;
+    void * stack_addr;
+    int * plocal_var;
+    size_t stack_size;
+    void* sig_addr;
+    sig_addr = info->si_addr;
+
+    pthread_getattr_np(pthread_self(), &attr);
+    pthread_attr_getstack( &attr, &stack_addr, &stack_size );
+
+
+    //printf( "stackaddr = %p, stacksize = %lu, signal address = %p\n", stackaddr, stacksize, sig_addr );
+        
+    // The error has occurred inside the stack
+    return (size_t)sig_addr <= (size_t)stack_addr && (size_t)sig_addr >= (size_t)stack_addr - (size_t)stack_size;
+}
+
 static void seh__sighandler(int sig, siginfo_t* info, void* context)
 {
     (void)info;
@@ -122,7 +148,14 @@ static void seh__sighandler(int sig, siginfo_t* info, void* context)
     switch (sig)
     {
     case SIGBUS:
-        seh_throw(SEH_MISALIGN);
+        if (check_stack_error(info)) {
+            // According to https://stackoverflow.com/questions/62432847/is-there-a-way-to-catch-stack-overflow-in-a-process-c-linux
+            // sometimes stack overflow in linux could raise SIGBUS
+            // Hopefully in this case the error is still inside the stack...
+            seh_throw(SEH_STACKERROR);
+        } else {
+            seh_throw(SEH_MISALIGN);
+        }
         break;
 
 //    case SIGSYS:
@@ -141,8 +174,16 @@ static void seh__sighandler(int sig, siginfo_t* info, void* context)
         seh_throw(SEH_ABORT);
         break;
 
+    case SIGINT:
+        seh_throw(SEH_USER_INTERRUPT);
+        break;
+
     case SIGSEGV:
-        seh_throw(SEH_SEGFAULT);
+        if (check_stack_error(info)) {
+            seh_throw(SEH_STACKERROR);
+        } else {
+            seh_throw(SEH_MEMORYACCESS);
+        }
         break;
 	
     default:
@@ -150,6 +191,12 @@ static void seh__sighandler(int sig, siginfo_t* info, void* context)
         break;
     }
 }
+#endif
+
+#if !defined(_WIN32)
+const int seh_signals[] = {
+    SIGABRT, SIGINT, SIGFPE, SIGSEGV, SIGILL, SIGSYS, SIGBUS,
+};
 #endif
 
 int seh_get(void)
@@ -179,7 +226,7 @@ void seh__end(seh_t* ctx)
         int idx;
         for (idx = 0; idx < sizeof(seh_signals) / sizeof(seh_signals[0]); idx++)
         {
-            if (sigaction(seh_signals[idx], ((struct sigaction*)ctx->saved)[i], NULL) != 0)
+            if (sigaction(seh_signals[idx], &((struct sigaction*)ctx->saved)[idx], NULL) != 0)
             {
                 break;
             }
@@ -191,17 +238,23 @@ void seh__end(seh_t* ctx)
     }
 }
 
-#if !defined(_WIN32)
-const int seh_signals[] = {
-    SIGABRT, SIGFPE, SIGSEGV, SIGILL, SIGSYS, SIGBUS,
-};
-#endif
-
 void seh__begin(seh_t* ctx)
 {
     if (ctx == seh_stack[seh_stack_pointer])
     {
         return;
+    }
+
+    if (seh__signal_stack == NULL) {
+        char* stack_buffer = (char*)malloc(SIGSTKSZ);
+
+        seh__signal_stack = (stack_t*)malloc(sizeof(stack_t));
+        seh__signal_stack->ss_size = SIGSTKSZ;
+        seh__signal_stack->ss_sp = stack_buffer;
+
+        if (sigaltstack(seh__signal_stack, 0) < 0) {
+            exit(1);
+        }
     }
 
 #if defined(_WIN32)
@@ -214,10 +267,10 @@ void seh__begin(seh_t* ctx)
     sigemptyset(&sa.sa_mask);
     sa.sa_handler   = NULL;
     sa.sa_sigaction = seh__sighandler;
-    sa.sa_flags     = SA_SIGINFO | SA_RESTART | SA_NODEFER;
+    sa.sa_flags     = SA_SIGINFO | SA_RESTART | SA_NODEFER | SA_ONSTACK;
     for (idx = 0; idx < sizeof(seh_signals) / sizeof(seh_signals[0]); idx++)
     {
-        if (sigaction(seh_signals[idx], &sa, ((struct sigaction*)ctx->saved)[i]) != 0)
+        if (sigaction(seh_signals[idx], &sa, &((struct sigaction*)ctx->saved)[idx]) != 0)
         {
             free(ctx->saved);
             return;
