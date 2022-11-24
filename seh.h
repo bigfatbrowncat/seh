@@ -34,9 +34,8 @@ typedef struct seh
 } seh_t;
 
 #define seh_enter { seh_t* seh_local_ctx = (seh_t*) malloc(sizeof(seh_t)); seh__begin(seh_local_ctx); if (setjmp(seh_local_ctx->jmpbuf) == 0)
-#define seh_handle(exp)  else if ((seh_get() != SEH_LEAVE) && (exp))
+#define seh_handle else if (seh_get() != SEH_LEAVE)
 #define seh_exit seh__end(seh_local_ctx); }
-//#define seh_throw(i)     cur_value = i; longjmp(ctx, 1)
 
 SEH_API int  seh_get(void);
 SEH_API void seh_leave(void);
@@ -58,8 +57,6 @@ SEH_API void seh__end(seh_t* ctx);
 static int    seh_value;
 static int    seh_stack_pointer = 0;
 static seh_t* seh_stack[SEH_STACK_SIZE];
-static stack_t* seh__signal_stack;
-
 
 #if defined(_WIN32)
 static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
@@ -121,7 +118,10 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
         ? EXCEPTION_CONTINUE_EXECUTION 
         : EXCEPTION_CONTINUE_SEARCH;
 }
-#else
+
+#else // defined(_WIN32)
+
+static stack_t* seh__signal_stack;
 
 int check_stack_error(siginfo_t* info) {
     pthread_attr_t attr;
@@ -245,7 +245,12 @@ void seh__begin(seh_t* ctx)
         return;
     }
 
+#if defined(_WIN32)
+    ctx->saved = (void*)SetUnhandledExceptionFilter(seh__sighandler);
+#else
     if (seh__signal_stack == NULL) {
+        // Creating a special stack for signal processing (to handle SIGSEGV correctly)
+
         char* stack_buffer = (char*)malloc(SIGSTKSZ);
 
         seh__signal_stack = (stack_t*)malloc(sizeof(stack_t));
@@ -257,9 +262,6 @@ void seh__begin(seh_t* ctx)
         }
     }
 
-#if defined(_WIN32)
-    ctx->saved = (void*)SetUnhandledExceptionFilter(seh__sighandler);
-#else
     ctx->saved = malloc(sizeof(struct sigaction) * (sizeof(seh_signals) / sizeof(seh_signals[0])));
 
     int idx;

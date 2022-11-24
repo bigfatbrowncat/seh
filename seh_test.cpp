@@ -12,8 +12,6 @@
 #define SEH_IMPL
 #include "seh.h"
 
-#define	_EM_INVALID	0x00000010
-
 #define REPORT(T, MSG) if (T) { printf("%s: SUCCESS\n", MSG); } else { printf("%s: FAIL\n", MSG); }
 
 void enable_fp_traps() {
@@ -36,9 +34,11 @@ bool test_segfault() {
         int* ptr = NULL;
         *ptr = 0; /* Throw exception here */
     }
-    seh_handle (seh_get() == SEH_MEMORYACCESS)
+    seh_handle
     {
-        s1 = true;
+        switch (seh_get()) {
+            case SEH_MEMORYACCESS: s1 = true; break;
+        }
     }
     seh_exit
     {
@@ -51,15 +51,19 @@ bool test_segfault() {
 bool test_div_int_zero() {
     bool s1 = false, s2 = false;
 
+    enable_fp_traps();
+
     seh_enter
     {
         int a = 3, b = 0, c = -1;
         c = a / b;
         printf("%d\n", c);
     }
-    seh_handle (seh_get() == SEH_ARITHMETICS)
+    seh_handle
     {
-        s1 = true;
+        switch (seh_get()) {
+            case SEH_ARITHMETICS: s1 = true; break;
+        }
     }
     seh_exit
     {
@@ -80,9 +84,11 @@ bool test_div_float_zero() {
         c = a / b;
         printf("%f\n", c);
     }
-    seh_handle (seh_get() == SEH_ARITHMETICS)
+    seh_handle
     {
-        s1 = true;
+        switch (seh_get()) {
+            case SEH_ARITHMETICS: s1 = true; break;
+        }
     }
     seh_exit
     {
@@ -118,9 +124,11 @@ bool test_denormal() {
 
         printf("%f", sum);
     }
-    seh_handle (seh_get() == SEH_ARITHMETICS)
+    seh_handle
     {
-        s1 = true;
+        switch (seh_get()) {
+            case SEH_ARITHMETICS: s1 = true; break;
+        }
     }
     seh_exit
     {
@@ -131,7 +139,7 @@ bool test_denormal() {
 }
 
 void recursive_stack_overflow() {
-    printf("%s", "");
+    printf("%s", "");       // Doing literally nothing, but fooling the optimizer
     recursive_stack_overflow();
 }
 
@@ -142,9 +150,11 @@ bool test_stack_overflow() {
     {
         recursive_stack_overflow();
     }
-    seh_handle (seh_get() == SEH_STACKERROR)
+    seh_handle
     {
-        s1 = true;
+        switch (seh_get()) {
+            case SEH_STACKERROR: s1 = true; break;
+        }
     }
     seh_exit
     {
@@ -173,18 +183,22 @@ bool test_check_inside_check_segfault() {
             int* ptr = NULL;
             *ptr = 0; /* Throw exception here */
         }
-        seh_handle (seh_get() == SEH_MEMORYACCESS)
+        seh_handle
         {
-            s1 = true;
+            switch (seh_get()) {
+                case SEH_MEMORYACCESS: s1 = true; break;       // It should be handled here
+            }
         }
         seh_exit
         {
             s2 = seh_stack_pointer == ptr_start + 1;
         }
     }
-    seh_handle (seh_get() == SEH_MEMORYACCESS)
+    seh_handle
     {
-        s1 = false;
+        switch (seh_get()) {
+            case SEH_MEMORYACCESS: s1 = false; break;       // It should NOT be handled here
+        }
     }
     seh_exit
     {
@@ -197,8 +211,6 @@ bool test_check_inside_check_segfault() {
 
 int main(int argc, char* argv[])
 {
-    enable_fp_traps();
-
     REPORT(test_segfault(), "Single segmentation fault");
     REPORT(test_thousand_segfaults(), "Thousand segmentation faults");
     REPORT(test_div_int_zero(), "Integer division by zero");
