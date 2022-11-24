@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include <math.h>
 
-#include <memory>
-
 #ifdef _WIN32
 #include <float.h>
 #else
@@ -14,8 +12,52 @@
 
 #define REPORT(T, MSG) if (T) { printf("%s: SUCCESS\n", MSG); } else { printf("%s: FAIL\n", MSG); }
 
+#ifdef __APPLE__ // && defined(__MACH__)
+// Public domain polyfill for feenableexcept on OS X
+// http://www-personal.umich.edu/~williams/archive/computation/fe-handling-example.c
+
+inline int feenableexcept(unsigned int excepts)
+{
+    static fenv_t fenv;
+    unsigned int new_excepts = excepts & FE_ALL_EXCEPT;
+    // previous masks
+    unsigned int old_excepts;
+
+    if (fegetenv(&fenv)) {
+        return -1;
+    }
+    old_excepts = fenv.__control & FE_ALL_EXCEPT;
+
+    // unmask
+    fenv.__control &= ~new_excepts;
+    fenv.__mxcsr   &= ~(new_excepts << 7);
+
+    return fesetenv(&fenv) ? -1 : old_excepts;
+}
+
+inline int fedisableexcept(unsigned int excepts)
+{
+    static fenv_t fenv;
+    unsigned int new_excepts = excepts & FE_ALL_EXCEPT;
+    // all previous masks
+    unsigned int old_excepts;
+
+    if (fegetenv(&fenv)) {
+        return -1;
+    }
+    old_excepts = fenv.__control & FE_ALL_EXCEPT;
+
+    // mask
+    fenv.__control |= new_excepts;
+    fenv.__mxcsr   |= new_excepts << 7;
+
+    return fesetenv(&fenv) ? -1 : old_excepts;
+}
+
+#endif
+
 void enable_fp_traps() {
-#ifdef _WIN32
+#if defined(_WIN32)
     _control87(_EM_INVALID, _EM_OVERFLOW | _EM_UNDERFLOW | _EM_INEXACT | _EM_ZERODIVIDE | _EM_DENORMAL);
 #else
     feenableexcept(FE_DIVBYZERO);

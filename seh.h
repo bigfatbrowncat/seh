@@ -7,6 +7,7 @@
 #include <Windows.h>
 #else
 #include <signal.h>
+#include <pthread.h>
 #endif
 
 #ifndef SEH_API
@@ -33,9 +34,9 @@ typedef struct seh
     jmp_buf jmpbuf;
 } seh_t;
 
-#define seh_enter { seh_t* seh_local_ctx = (seh_t*) malloc(sizeof(seh_t)); seh__begin(seh_local_ctx); if (setjmp(seh_local_ctx->jmpbuf) == 0)
+#define seh_enter { seh_t* seh_local_ctx = (seh_t*) malloc(sizeof(seh_t)); seh_begin(seh_local_ctx); if (setjmp(seh_local_ctx->jmpbuf) == 0)
 #define seh_handle else if (seh_get() != SEH_LEAVE)
-#define seh_exit seh__end(seh_local_ctx); }
+#define seh_exit seh_end(seh_local_ctx); }
 
 SEH_API int  seh_get(void);
 SEH_API void seh_leave(void);
@@ -43,8 +44,8 @@ SEH_API void seh_throw(int value);
 
 // Internal functions
 
-SEH_API void seh__begin(seh_t* ctx);
-SEH_API void seh__end(seh_t* ctx);
+SEH_API void seh_begin(seh_t* ctx);
+SEH_API void seh_end(seh_t* ctx);
 
 #endif /* __SEH_H__ */
 
@@ -59,7 +60,7 @@ static int    seh_stack_pointer = 0;
 static seh_t* seh_stack[SEH_STACK_SIZE];
 
 #if defined(_WIN32)
-static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
+static LONG WINAPI seh_sighandler(EXCEPTION_POINTERS* info)
 {
     switch (info->ExceptionRecord->ExceptionCode)
     {
@@ -121,7 +122,7 @@ static LONG WINAPI seh__sighandler(EXCEPTION_POINTERS* info)
 
 #else // defined(_WIN32)
 
-static stack_t* seh__signal_stack;
+static stack_t* seh_signal_stack;
 
 int check_stack_error(siginfo_t* info) {
     pthread_attr_t attr;
@@ -131,17 +132,34 @@ int check_stack_error(siginfo_t* info) {
     void* sig_addr;
     sig_addr = info->si_addr;
 
+#ifdef __APPLE__
+    // pthread_get_stacksize_np() returns a value too low for the main thread on
+    // OSX 10.9, http://mail.openjdk.java.net/pipermail/hotspot-dev/2013-October/011369.html
+    //
+    // Multiple workarounds possible, adopt the one made by https://github.com/robovm/robovm/issues/274
+    // https://developer.apple.com/library/mac/documentation/Cocoa/Conceptual/Multithreading/CreatingThreads/CreatingThreads.html
+    // Stack size for the main thread is 8MB on OSX excluding the guard page size.
+    pthread_t thread = pthread_self();
+    stack_size = pthread_main_np() ? (8 * 1024 * 1024) : pthread_get_stacksize_np(thread);
+
+    // stack address points to the start of the stack, not the end how it's returned by pthread_get_stackaddr_np
+    stack_addr = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(thread)) - stack_size);
+#else
     pthread_getattr_np(pthread_self(), &attr);
     pthread_attr_getstack( &attr, &stack_addr, &stack_size );
 
+    if (pthread_attr_getstackaddr(&attr, &stack_addr) != 0) {
+        exit(1);
+    }
+#endif
 
-    //printf( "stackaddr = %p, stacksize = %lu, signal address = %p\n", stackaddr, stacksize, sig_addr );
+    //printf( "stackaddr = %p, stacksize = %lu, signal address = %p\n", stack_addr, stack_size, sig_addr );
         
     // The error has occurred inside the stack
     return (size_t)sig_addr <= (size_t)stack_addr && (size_t)sig_addr >= (size_t)stack_addr - (size_t)stack_size;
 }
 
-static void seh__sighandler(int sig, siginfo_t* info, void* context)
+static void seh_sighandler(int sig, siginfo_t* info, void* context)
 {
     (void)info;
     (void)context;
@@ -216,7 +234,7 @@ void seh_throw(int value)
     longjmp(ctx->jmpbuf, 1);
 }
 
-void seh__end(seh_t* ctx)
+void seh_end(seh_t* ctx)
 {
     if (ctx == seh_stack[seh_stack_pointer - 1])
     {
@@ -238,7 +256,7 @@ void seh__end(seh_t* ctx)
     }
 }
 
-void seh__begin(seh_t* ctx)
+void seh_begin(seh_t* ctx)
 {
     if (ctx == seh_stack[seh_stack_pointer])
     {
@@ -246,18 +264,18 @@ void seh__begin(seh_t* ctx)
     }
 
 #if defined(_WIN32)
-    ctx->saved = (void*)SetUnhandledExceptionFilter(seh__sighandler);
+    ctx->saved = (void*)SetUnhandledExceptionFilter(seh_sighandler);
 #else
-    if (seh__signal_stack == NULL) {
+    if (seh_signal_stack == NULL) {
         // Creating a special stack for signal processing (to handle SIGSEGV correctly)
 
         char* stack_buffer = (char*)malloc(SIGSTKSZ);
 
-        seh__signal_stack = (stack_t*)malloc(sizeof(stack_t));
-        seh__signal_stack->ss_size = SIGSTKSZ;
-        seh__signal_stack->ss_sp = stack_buffer;
+        seh_signal_stack = (stack_t*)malloc(sizeof(stack_t));
+        seh_signal_stack->ss_size = SIGSTKSZ;
+        seh_signal_stack->ss_sp = stack_buffer;
 
-        if (sigaltstack(seh__signal_stack, 0) < 0) {
+        if (sigaltstack(seh_signal_stack, 0) < 0) {
             exit(1);
         }
     }
@@ -268,7 +286,7 @@ void seh__begin(seh_t* ctx)
     struct sigaction sa, old;
     sigemptyset(&sa.sa_mask);
     sa.sa_handler   = NULL;
-    sa.sa_sigaction = seh__sighandler;
+    sa.sa_sigaction = seh_sighandler;
     sa.sa_flags     = SA_SIGINFO | SA_RESTART | SA_NODEFER | SA_ONSTACK;
     for (idx = 0; idx < sizeof(seh_signals) / sizeof(seh_signals[0]); idx++)
     {
